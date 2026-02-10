@@ -5,16 +5,16 @@ Programa en Python para explorar páginas de medicamentos y extraer precios desd
 ## Requisitos
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ## Formato de entrada
 
 Archivo CSV con estas columnas:
 
-- `url` (obligatoria)
-- `nombre` (opcional, para identificar el medicamento)
-- `selector` (opcional, selector CSS exacto del nodo donde aparece el precio)
+- `url` (opcional si usas `--site` y proporcionas `nombre`)
+- `nombre` (recomendado, para identificar el medicamento y construir búsquedas)
+- `selector` (opcional, selector CSS simple `.clase` o `#id`)
 
 Ejemplo (`ejemplo_entrada.csv`):
 
@@ -26,14 +26,25 @@ Paracetamol 500,https://example.com/medicamento-2,
 
 ## Ejecución
 
+### Modo general por URL
+
 ```bash
 python scraper_medicamentos.py --input ejemplo_entrada.csv --output precios.csv
 ```
 
-Opciones útiles:
+### Buscar en Cruz Verde (Chile)
 
-- `--timeout 20`
-- `--user-agent "Mozilla/5.0 (...)"`
+Si en el CSV dejas vacía la columna `url` y completas `nombre`, el script arma la búsqueda automáticamente:
+
+```bash
+python scraper_medicamentos.py --input ejemplo_entrada.csv --site cruzverde --output precios_cruzverde.csv
+```
+
+También puedes definir tu plantilla de búsqueda para otro sitio:
+
+```bash
+python scraper_medicamentos.py --input ejemplo_entrada.csv --search-template "https://dominio.com/search?q={query}" --output precios.csv
+```
 
 ## Salida
 
@@ -48,5 +59,6 @@ CSV con:
 
 ## Notas
 
-- Si no proporcionas `selector`, el script usa heurísticas (`price`, `precio`, `itemprop=price`) y luego búsqueda global por regex.
+- Si no proporcionas `selector`, el script usa heurísticas (`price`, `precio`), texto global y JSON embebido (`application/ld+json`).
+- En muchos e-commerce modernos (incluyendo Cruz Verde), parte del precio puede estar en JSON de la página; por eso se agregó extracción desde JSON.
 - Respeta los términos de uso, robots.txt y la legislación aplicable del sitio que consultes.

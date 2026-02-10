@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import re
+from urllib.parse import quote_plus
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from html import unescape
@@ -86,6 +88,52 @@ def _extract_by_selector_like(html: str, selector: str) -> Optional[str]:
     return limpiar_html_a_texto(m.group(1))
 
 
+def construir_url_busqueda(nombre: str, site: str, search_template: str = "") -> str:
+    if search_template:
+        return search_template.format(query=quote_plus(nombre))
+    if site == "cruzverde":
+        return f"https://www.cruzverde.cl/search?q={quote_plus(nombre)}"
+    return ""
+
+
+def _extraer_precio_desde_json(html: str) -> Optional[str]:
+    for contenido in re.findall(r"<script[^>]*application/ld\+json[^>]*>(.*?)</script>", html, flags=re.IGNORECASE | re.DOTALL):
+        bloque = contenido.strip()
+        if not bloque:
+            continue
+        try:
+            data = json.loads(bloque)
+        except json.JSONDecodeError:
+            continue
+        candidatos = _recorrer_json_por_precio(data)
+        if candidatos:
+            return candidatos[0]
+
+    # fallback para blobs JSON incrustados tipo Next.js
+    for patron in [r'"price"\s*:\s*"?([\d\.,]+)"?', r'"salePrice"\s*:\s*"?([\d\.,]+)"?']:
+        m = re.search(patron, html, flags=re.IGNORECASE)
+        if m:
+            valor = normalizar_numero(m.group(1))
+            if valor:
+                return valor
+    return None
+
+
+def _recorrer_json_por_precio(data: object) -> list[str]:
+    encontrados: list[str] = []
+    if isinstance(data, dict):
+        for clave, valor in data.items():
+            if clave.lower() == "price":
+                precio = normalizar_numero(str(valor))
+                if precio:
+                    encontrados.append(precio)
+            encontrados.extend(_recorrer_json_por_precio(valor))
+    elif isinstance(data, list):
+        for item in data:
+            encontrados.extend(_recorrer_json_por_precio(item))
+    return encontrados
+
+
 def leer_entradas(path: Path) -> Iterable[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -123,15 +171,21 @@ def parsear_precio(html: str, selector: str = "") -> tuple[Optional[str], str]:
     precio = extraer_primer_precio(limpiar_html_a_texto(html))
     if precio:
         return precio, "texto_completo"
+
+    precio_json = _extraer_precio_desde_json(html)
+    if precio_json:
+        return precio_json, "json"
     return None, ""
 
 
-def procesar_url(entrada: dict[str, str], timeout: int, user_agent: str) -> Resultado:
+def procesar_url(entrada: dict[str, str], timeout: int, user_agent: str, site: str = "", search_template: str = "") -> Resultado:
     url = entrada.get("url", "")
     nombre = entrada.get("nombre", "")
     selector = entrada.get("selector", "")
+    if not url and nombre:
+        url = construir_url_busqueda(nombre, site=site, search_template=search_template)
     if not url:
-        return Resultado(url, nombre, "", "", "error", "URL vacía")
+        return Resultado(url, nombre, "", "", "error", "URL vacía (usa columna url o nombre+--site)")
     try:
         html = descargar_html(url, timeout, user_agent)
         precio_crudo, selector_usado = parsear_precio(html, selector)
@@ -159,13 +213,28 @@ def construir_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", default=Path("precios_extraidos.csv"), type=Path)
     p.add_argument("--timeout", default=20, type=int)
     p.add_argument("--user-agent", default="Mozilla/5.0 (compatible; PriceListBot/1.0)")
+    p.add_argument("--site", choices=["", "cruzverde"], default="", help="Activa lógica de construcción de URL por sitio")
+    p.add_argument(
+        "--search-template",
+        default="",
+        help="Template para construir URL de búsqueda cuando no hay url en CSV. Usa {query}, p.ej. 'https://dominio.com/search?q={query}'",
+    )
     return p
 
 
 def main() -> int:
     args = construir_parser().parse_args()
     entradas = list(leer_entradas(args.input))
-    resultados = [procesar_url(e, args.timeout, args.user_agent) for e in entradas]
+    resultados = [
+        procesar_url(
+            e,
+            args.timeout,
+            args.user_agent,
+            site=args.site,
+            search_template=args.search_template,
+        )
+        for e in entradas
+    ]
     guardar_resultados(args.output, resultados)
     ok = sum(1 for r in resultados if r.estado == "ok")
     print(f"Proceso completado. {ok}/{len(resultados)} URLs con precio detectado. Salida: {args.output}")
